@@ -26,6 +26,8 @@ import vtk
 from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
 from vtkmodules.util.numpy_support import numpy_to_vtk, numpy_to_vtkIdTypeArray, vtk_to_numpy
 
+from features import FeatureWorkbench
+
 
 class PrinterDiscoveryWorker(QtCore.QThread):
     devices_found = QtCore.Signal(list, list)
@@ -772,6 +774,8 @@ class DentalWindow(QtWidgets.QMainWindow):
         self.ct_volume = None
         self.ct_metadata = None
         self.bed_actor = None
+        self.feature_workbench = None
+        self.extension_state = {}
         self.printer_dialog = None
         self.printers = {}
         self.printer_checks = {}
@@ -1507,6 +1511,8 @@ class DentalWindow(QtWidgets.QMainWindow):
         self.orientation.InteractiveOff()
         self.select_tooth(16)
         self.set_step(0)
+        feature_action = self.menuBar().addAction("확장 기능")
+        feature_action.triggered.connect(self.show_feature_workbench)
         startup_project = next((Path(value) for value in sys.argv[1:] if Path(value).suffix.lower() == ".exo" and Path(value).is_file()), None)
         if startup_project:
             QtCore.QTimer.singleShot(150, lambda: self.open_project(path_override=str(startup_project)))
@@ -1518,6 +1524,13 @@ class DentalWindow(QtWidgets.QMainWindow):
         self.step_buttons[index].setChecked(True)
         self.panel_title.setText(["스캔 데이터", "마진선 지정", "삽입축 설정", "보철 설계", "형태 편집", "검사 및 출력", "모델 · 장치 생성", "출력 준비 · STL / 3MF", "DICOM / CT 표면"][index])
         self.set_mode("orbit")
+
+    def show_feature_workbench(self):
+        if self.feature_workbench is None:
+            self.feature_workbench = FeatureWorkbench(self)
+        self.feature_workbench.show()
+        self.feature_workbench.raise_()
+        self.feature_workbench.activateWindow()
 
     def select_tooth(self, tooth):
         self.current_tooth = int(tooth)
@@ -1577,6 +1590,11 @@ class DentalWindow(QtWidgets.QMainWindow):
         actor.GetProperty().SetSpecular(0.24)
         actor.GetProperty().SetSpecularPower(35)
         actor.GetProperty().SetInterpolationToPhong()
+        if isinstance(metadata.get("appearance"), dict):
+            appearance = metadata["appearance"]
+            actor.GetProperty().SetInterpolationToPBR()
+            actor.GetProperty().SetMetallic(float(appearance.get("metallic", 0)))
+            actor.GetProperty().SetRoughness(float(appearance.get("roughness", .3)))
         actor.GetProperty().SetOpacity(metadata.pop("opacity", 0.40 if role == "antagonist" else 1.0))
         actor.SetVisibility(metadata.pop("visible", True))
         if self.wire_toggle.isChecked():
@@ -1594,6 +1612,7 @@ class DentalWindow(QtWidgets.QMainWindow):
         symbols = {"scan": "스캔", "antagonist": "대합", "reference": "참고", "restoration": "보철", "connector": "연결",
                    "model": "모델", "die": "다이", "appliance": "장치", "library": "치아형", "part": "부품",
                    "pontic": "폰틱", "bar": "바", "print": "출력", "segmentation": "CT"}
+        symbols.update(denture="의치", gingiva="치은")
         for key, obj in self.objects.items():
             item = QtWidgets.QTreeWidgetItem([f"{symbols.get(obj['role'], '')}  {obj['name']}"])
             item.setData(0, QtCore.Qt.ItemDataRole.UserRole, key)
@@ -1694,6 +1713,11 @@ class DentalWindow(QtWidgets.QMainWindow):
                 return False
             if result == QtWidgets.QMessageBox.StandardButton.Save and not self.save_project():
                 return False
+        if self.feature_workbench is not None:
+            self.feature_workbench.close()
+            self.feature_workbench.deleteLater()
+            self.feature_workbench = None
+        self.extension_state = {}
         self.clear_scene()
         self.section_toggle.setChecked(False)
         self.section_slider.setValue(500)
@@ -1921,7 +1945,7 @@ class DentalWindow(QtWidgets.QMainWindow):
                 self.measure_points = []
                 self.vtk_widget.GetRenderWindow().Render()
         elif self.mode in ["add", "remove", "smooth"]:
-            if self.objects[picked]["role"] not in ["restoration", "pontic"] or self.objects[picked].get("tooth") != self.current_tooth:
+            if self.objects[picked]["role"] not in ["restoration", "pontic", "part", "appliance", "denture", "gingiva", "bar"] or self.objects[picked].get("tooth") != self.current_tooth:
                 self.statusBar().showMessage("선택 치아의 보철 표면을 클릭하세요.", 4000)
                 return
             self.active_id = picked
@@ -2790,7 +2814,7 @@ class DentalWindow(QtWidgets.QMainWindow):
         obj = self.objects[self.active_id]
         mesh = obj["mesh"]
         points = vtk_to_numpy(mesh.GetPoints().GetData())
-        editable = np.asarray(obj.get("editable", [obj["role"] == "pontic"]*len(points)), dtype=bool)
+        editable = np.asarray(obj.get("editable", [obj["role"] in {"pontic", "part", "appliance", "denture", "gingiva", "bar"}]*len(points)), dtype=bool)
         distance = np.linalg.norm(points-position, axis=1)
         mask = (distance < self.brush_radius.value()) & editable
         if not mask.any():
@@ -2844,7 +2868,7 @@ class DentalWindow(QtWidgets.QMainWindow):
         self.vtk_widget.GetRenderWindow().Render()
 
     def push_undo(self):
-        snapshot = {"objects": {}, "teeth": copy.deepcopy(self.teeth), "current": self.current_tooth, "layout_points": copy.deepcopy(self.layout_points)}
+        snapshot = {"objects": {}, "teeth": copy.deepcopy(self.teeth), "current": self.current_tooth, "layout_points": copy.deepcopy(self.layout_points), "extensions": copy.deepcopy(self.extension_state)}
         for key, obj in self.objects.items():
             mesh = vtk.vtkPolyData()
             mesh.DeepCopy(obj["mesh"])
@@ -2879,6 +2903,7 @@ class DentalWindow(QtWidgets.QMainWindow):
     def restore_snapshot(self, snapshot):
         self.clear_scene()
         self.teeth = copy.deepcopy(snapshot["teeth"])
+        self.extension_state = copy.deepcopy(snapshot.get("extensions", {}))
         self.layout_points = copy.deepcopy(snapshot.get("layout_points", []))
         self.update_layout_path()
         for key, entry in snapshot["objects"].items():
@@ -3233,6 +3258,7 @@ class DentalWindow(QtWidgets.QMainWindow):
         temp = Path(path).with_suffix(".exo.tmp")
         try:
             manifest = {"format": "EXOCADE", "version": 1, "name": self.case_name.text(), "teeth": self.teeth,
+                        "extensions": self.extension_state,
                         "current_tooth": self.current_tooth, "objects": {}, "demo_margins": self.demo_margins,
                         "workspace": {"layout_points": self.layout_points,
                                       "active_id": self.active_id,
@@ -3294,6 +3320,7 @@ class DentalWindow(QtWidgets.QMainWindow):
             if not self.new_case():
                 return
             self.teeth = manifest["teeth"]
+            self.extension_state = manifest.get("extensions", {}) if isinstance(manifest.get("extensions", {}), dict) else {}
             self.demo_margins = {int(k): v for k, v in manifest.get("demo_margins", {}).items()}
             workspace = manifest.get("workspace", {})
             self.layout_points = workspace.get("layout_points", [])
@@ -3477,7 +3504,7 @@ class DentalWindow(QtWidgets.QMainWindow):
 
         roles = {"restoration", "connector", "model", "appliance", "die", "pontic", "implant", "bar", "denture", "gingiva", "part", "segmentation"}
         scope = 1 if selected else (self.output_scope.currentIndex() if hasattr(self, "output_scope") else 0)
-        originals = {key: obj for key, obj in self.objects.items() if obj["role"] in roles}
+        originals = {key: obj for key, obj in self.objects.items() if obj["role"] in roles and obj.get("export_enabled", True) and all(self.objects.get(endpoint, {}).get("export_enabled", True) for endpoint in obj.get("endpoints", []))}
         prepared = {key: obj for key, obj in self.objects.items() if obj["role"] == "print"}
         if scope == 1:
             if self.active_id not in self.objects:
@@ -5129,6 +5156,9 @@ class DentalWindow(QtWidgets.QMainWindow):
                 event.ignore()
                 return
         self.orientation.SetEnabled(0)
+        if self.feature_workbench is not None:
+            self.feature_workbench.deactivate_all()
+            self.feature_workbench.hide()
         self.printer_api_keys.clear()
         self.vtk_widget.Finalize()
         event.accept()
