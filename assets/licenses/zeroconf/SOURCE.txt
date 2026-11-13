@@ -1,0 +1,8 @@
+zeroconf 0.154.0 - unmodified upstream source distribution
+License: LGPL-2.1-or-later; this distribution selects LGPL 2.1.
+Project: https://github.com/python-zeroconf/python-zeroconf
+Release: https://pypi.org/project/zeroconf/0.154.0/
+Download: https://files.pythonhosted.org/packages/d6/dd/b1eb6a87dc0376289fb78c13231c4702797da49dd0da062c5d46a4cff865/zeroconf-0.154.0.tar.gz
+SHA256: 830315497af9bbd75924c2218cd3b64f0bde0e808ee316aabb5d9288836c0c43
+The archive contains the upstream source, build configuration, copyright notices and COPYING.
+No library source modifications were made for EXOCADE.

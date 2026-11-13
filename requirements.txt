@@ -1,0 +1,7 @@
+PySide6-Essentials==6.12.0
+vtk==9.7.2
+numpy==2.4.6
+manifold3d==3.5.4
+SimpleITK==2.5.7
+pyinstaller==6.22.3
+zeroconf==0.154.0

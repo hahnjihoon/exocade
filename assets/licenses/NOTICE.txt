@@ -1,0 +1,26 @@
+EXOCADE uses tooth dimension data adapted from DentCraft.
+Copyright (c) 2026 Dr. Mahmoud ElNajar and DentCraft contributors.
+Source: https://github.com/elnajar1/DentCraft/blob/main/crates/dentcraft-anatomy/src/dimensions.rs
+License selected: MIT. The complete notice is in DentCraft-MIT.txt.
+The original data cite published average dimensions in Wheeler's Dental Anatomy,
+Physiology and Occlusion, 9th edition (Nelson and Ash, 2010).
+EXOCADE's generated tooth surfaces are procedural starting shapes, not validated
+clinical anatomy and not exocad's proprietary tooth library.
+
+EXOCADE also uses PySide6 / Qt (LGPL-3.0), VTK (BSD), NumPy (BSD),
+Manifold (Apache-2.0) and SimpleITK (Apache-2.0).
+These components retain their own copyrights and license terms.
+
+EXOCADE uses python-zeroconf 0.154.0 for local mDNS service discovery.
+Copyright: The python-zeroconf authors; see the included source history/notices.
+License: LGPL-2.1-or-later (LGPL 2.1 selected for this distribution).
+Project: https://github.com/python-zeroconf/python-zeroconf
+The complete license, unmodified corresponding source archive, source checksum
+and replacement instructions are in the zeroconf subdirectory.
+Users may modify this library and debug those modifications through reverse
+engineering; EXOCADE imposes no restriction on these LGPL rights.
+
+python-zeroconf uses ifaddr 0.2.0, copyright (c) 2014 Stefan C. Mueller.
+Project: https://github.com/ifaddr/ifaddr
+License: MIT. The complete copyright and permission notice is in the ifaddr
+subdirectory.
