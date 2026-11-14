@@ -1867,6 +1867,9 @@ class DentalWindow(QtWidgets.QMainWindow):
         self.statusBar().showMessage("예제 준비 완료 · 02 마진선에서 예제 16번 마진을 사용할 수 있습니다.")
 
     def set_mode(self, mode):
+        if self.style.GetState() != 0:
+            self.style.StopState()
+        self.style.ReleaseFocus()
         self.mode = mode
         self.dragging = False
         for key, button in self.brush_buttons.items():
@@ -1904,8 +1907,11 @@ class DentalWindow(QtWidgets.QMainWindow):
             if self.objects[picked]["role"] != "scan":
                 self.statusBar().showMessage("작업악 스캔 표면을 클릭하세요. 대합치는 숨길 수 있습니다.", 5000)
                 return
-            self.push_undo()
             state = self.teeth[str(self.current_tooth)]
+            if state.get("margin") and state.get("scan_id") != picked:
+                self.statusBar().showMessage("기존 마진과 같은 작업악 스캔을 선택하거나 마진을 초기화하세요.", 6000)
+                return
+            self.push_undo()
             state["scan_id"] = picked
             if self.mode == "seed":
                 state["seed"] = point
@@ -1974,18 +1980,98 @@ class DentalWindow(QtWidgets.QMainWindow):
             self.margin_actor = None
         state = self.teeth.get(str(self.current_tooth), {})
         points = state.get("margin", [])
+        self._margin_connection_failed = False
         self.margin_info.setText(f"{self.current_tooth}번 치아 · {len(points)}개 점 · " + ("폐곡선 완료" if state.get("closed") else "점 선택 후 마진을 닫으세요."))
         if points:
+            source = self.objects.get(state.get("scan_id"))
+            surface = None
+            if source is not None:
+                mesh = source["mesh"]
+                cached = getattr(self, "_margin_surface", None)
+                if cached is None or cached["source"] is not mesh or cached["mtime"] != mesh.GetMTime():
+                    triangles = vtk.vtkTriangleFilter()
+                    triangles.SetInputData(mesh)
+                    triangles.PassVertsOff()
+                    triangles.PassLinesOff()
+                    clean = vtk.vtkCleanPolyData()
+                    clean.SetInputConnection(triangles.GetOutputPort())
+                    clean.SetTolerance(0.0)
+                    clean.ConvertPolysToLinesOff()
+                    clean.ConvertLinesToPointsOff()
+                    clean.Update()
+                    surface = vtk.vtkPolyData()
+                    surface.DeepCopy(clean.GetOutput())
+                    locator = vtk.vtkStaticCellLocator()
+                    locator.SetDataSet(surface)
+                    locator.BuildLocator()
+                    path = vtk.vtkDijkstraGraphGeodesicPath()
+                    path.SetInputData(surface)
+                    path.StopWhenEndReachedOn()
+                    self._margin_surface = {"source": mesh, "mtime": mesh.GetMTime(), "mesh": surface,
+                                            "locator": locator, "path": path, "segments": {}}
+                cached = self._margin_surface
+                surface = cached["mesh"]
+            anchors = []
+            anchor_cells = []
+            anchor_vertices = []
+            for point in points:
+                if surface is not None and surface.GetNumberOfPolys():
+                    nearest = [0., 0., 0.]
+                    cell_id = vtk.reference(0)
+                    cached["locator"].FindClosestPoint(point, nearest, cell_id, vtk.reference(0), vtk.reference(0.))
+                    cell = surface.GetCell(int(cell_id))
+                    vertices = [cell.GetPointId(j) for j in range(cell.GetNumberOfPoints())]
+                    vertex = min(vertices, key=lambda j: np.linalg.norm(np.asarray(surface.GetPoint(j))-nearest))
+                    anchors.append(nearest)
+                    anchor_cells.append(int(cell_id))
+                    anchor_vertices.append(vertex)
+                else:
+                    anchors.append(point)
             data = vtk.vtkPolyData()
             vtk_points = vtk.vtkPoints()
-            for point in points:
+            vtk_points.SetDataTypeToDouble()
+            for point in anchors:
                 vtk_points.InsertNextPoint(point)
             data.SetPoints(vtk_points)
             lines = vtk.vtkCellArray()
-            ids = list(range(len(points))) + ([0] if state.get("closed") else [])
-            lines.InsertNextCell(len(ids))
-            for index in ids:
-                lines.InsertCellPoint(index)
+            segment_count = len(points) if state.get("closed") and len(points) > 1 else len(points)-1
+            for index in range(segment_count):
+                end = (index+1) % len(points)
+                segment = []
+                if anchor_vertices and anchor_cells[index] != anchor_cells[end]:
+                    key = (anchor_vertices[index], anchor_vertices[end])
+                    if key not in cached["segments"]:
+                        if key[0] == key[1]:
+                            cached["segments"][key] = [surface.GetPoint(key[0])]
+                        else:
+                            path = cached["path"]
+                            path.SetStartVertex(key[0])
+                            path.SetEndVertex(key[1])
+                            path.Update()
+                            ids = path.GetIdList()
+                            vertex_ids = [ids.GetId(j) for j in range(ids.GetNumberOfIds())]
+                            if vertex_ids and vertex_ids[0] != key[0]:
+                                vertex_ids.reverse()
+                            cached["segments"][key] = ([surface.GetPoint(j) for j in vertex_ids]
+                                                       if vertex_ids and vertex_ids[0] == key[0] and vertex_ids[-1] == key[1] else [])
+                    segment = cached["segments"][key]
+                    if not segment:
+                        self._margin_connection_failed = True
+                        continue
+                ids = [index]
+                previous = np.asarray(anchors[index])
+                for point in segment:
+                    if np.linalg.norm(np.asarray(point)-previous) > 1e-6:
+                        ids.append(vtk_points.InsertNextPoint(point))
+                        previous = np.asarray(point)
+                if np.linalg.norm(np.asarray(anchors[end])-previous) > 1e-6:
+                    ids.append(end)
+                else:
+                    ids[-1] = end
+                if len(ids) > 1:
+                    lines.InsertNextCell(len(ids))
+                    for point_id in ids:
+                        lines.InsertCellPoint(point_id)
             data.SetLines(lines)
             verts = vtk.vtkCellArray()
             for index in range(len(points)):
@@ -1995,16 +2081,21 @@ class DentalWindow(QtWidgets.QMainWindow):
             mapper = vtk.vtkPolyDataMapper()
             mapper.SetInputData(data)
             mapper.SetResolveCoincidentTopologyToPolygonOffset()
+            mapper.SetRelativeCoincidentTopologyLineOffsetParameters(0, -4)
+            mapper.SetRelativeCoincidentTopologyPointOffsetParameter(-6)
             actor = vtk.vtkActor()
             actor.SetMapper(mapper)
             actor.GetProperty().SetColor(1, 0.50, 0.13)
             actor.GetProperty().SetLineWidth(3)
             actor.GetProperty().SetPointSize(7)
+            actor.GetProperty().RenderLinesAsTubesOn()
             actor.GetProperty().RenderPointsAsSpheresOn()
             actor.GetProperty().LightingOff()
             actor.PickableOff()
             self.renderer.AddActor(actor)
             self.margin_actor = actor
+        if self._margin_connection_failed:
+            self.margin_info.setText(f"{self.current_tooth}번 치아 · {len(points)}개 점 · 스캔이 끊긴 구간의 점을 다시 지정하세요.")
         self.vtk_widget.GetRenderWindow().Render()
 
     def margin_undo(self):
@@ -2026,14 +2117,17 @@ class DentalWindow(QtWidgets.QMainWindow):
 
     def margin_close(self):
         state = self.teeth[str(self.current_tooth)]
+        self.set_mode("orbit")
         if len(state["margin"]) < 6:
             self.statusBar().showMessage("마진 점을 최소 6개 지정하세요.", 6000)
             return
         self.push_undo()
         state["closed"] = True
         self.dirty = True
-        self.set_mode("orbit")
         self.update_margin()
+        if self._margin_connection_failed:
+            state["closed"] = False
+            self.update_margin()
 
     def demo_margin(self):
         scan_id = next((k for k, o in self.objects.items() if o["role"] == "scan" and o.get("demo")), None)
